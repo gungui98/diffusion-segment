@@ -3,23 +3,23 @@ import math
 import random
 
 from PIL import Image
-import blobfile as bf
-from mpi4py import MPI
+# import blobfile as bf
+# from mpi4py import MPI
 import numpy as np
 from torch.utils.data import DataLoader, Dataset
 
 
 def load_data(
-    *,
-    dataset_mode,
-    data_dir,
-    batch_size,
-    image_size,
-    class_cond=False,
-    deterministic=False,
-    random_crop=True,
-    random_flip=True,
-    is_train=True,
+        *,
+        dataset_mode,
+        data_dir,
+        batch_size,
+        image_size,
+        class_cond=False,
+        deterministic=False,
+        random_crop=True,
+        random_flip=True,
+        is_train=True,
 ):
     """
     For a dataset, create a generator over (images, kwargs) pairs.
@@ -48,8 +48,10 @@ def load_data(
         classes = [x for x in labels_file if x.endswith('_labelIds.png')]
         instances = [x for x in labels_file if x.endswith('_instanceIds.png')]
     elif dataset_mode == 'ade20k':
-        all_files = _list_image_files_recursively(os.path.join(data_dir, 'images', 'training' if is_train else 'validation'))
-        classes = _list_image_files_recursively(os.path.join(data_dir, 'annotations', 'training' if is_train else 'validation'))
+        all_files = _list_image_files_recursively(
+            os.path.join(data_dir, 'images', 'training' if is_train else 'validation'))
+        classes = _list_image_files_recursively(
+            os.path.join(data_dir, 'annotations', 'training' if is_train else 'validation'))
         instances = None
     elif dataset_mode == 'celeba':
         # The edge is computed by the instances.
@@ -88,6 +90,15 @@ def load_data(
         yield from loader
 
 
+def load_mockup_data(resolution,
+                     batch_size,
+                     **kwargs):
+    dataset = MockupDataset(resolution=resolution, num_classes=4)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=1, drop_last=True)
+    while True:
+        yield from loader
+
+
 def _list_image_files_recursively(data_dir):
     results = []
     for entry in sorted(bf.listdir(data_dir)):
@@ -102,17 +113,17 @@ def _list_image_files_recursively(data_dir):
 
 class ImageDataset(Dataset):
     def __init__(
-        self,
-        dataset_mode,
-        resolution,
-        image_paths,
-        classes=None,
-        instances=None,
-        shard=0,
-        num_shards=1,
-        random_crop=False,
-        random_flip=True,
-        is_train=True
+            self,
+            dataset_mode,
+            resolution,
+            image_paths,
+            classes=None,
+            instances=None,
+            shard=0,
+            num_shards=1,
+            random_crop=False,
+            random_flip=True,
+            is_train=True
     ):
         super().__init__()
         self.is_train = is_train
@@ -142,7 +153,7 @@ class ImageDataset(Dataset):
         pil_class = pil_class.convert("L")
 
         if self.local_instances is not None:
-            instance_path = self.local_instances[idx] # DEBUG: from classes to instances, may affect CelebA
+            instance_path = self.local_instances[idx]  # DEBUG: from classes to instances, may affect CelebA
             with bf.BlobFile(instance_path, "rb") as f:
                 pil_instance = Image.open(f)
                 pil_instance.load()
@@ -155,11 +166,14 @@ class ImageDataset(Dataset):
         else:
             if self.is_train:
                 if self.random_crop:
-                    arr_image, arr_class, arr_instance = random_crop_arr([pil_image, pil_class, pil_instance], self.resolution)
+                    arr_image, arr_class, arr_instance = random_crop_arr([pil_image, pil_class, pil_instance],
+                                                                         self.resolution)
                 else:
-                    arr_image, arr_class, arr_instance = center_crop_arr([pil_image, pil_class, pil_instance], self.resolution)
+                    arr_image, arr_class, arr_instance = center_crop_arr([pil_image, pil_class, pil_instance],
+                                                                         self.resolution)
             else:
-                arr_image, arr_class, arr_instance = resize_arr([pil_image, pil_class, pil_instance], self.resolution, keep_aspect=False)
+                arr_image, arr_class, arr_instance = resize_arr([pil_image, pil_class, pil_instance], self.resolution,
+                                                                keep_aspect=False)
 
         if self.random_flip and random.random() < 0.5:
             arr_image = arr_image[:, ::-1].copy()
@@ -177,12 +191,32 @@ class ImageDataset(Dataset):
         elif self.dataset_mode == 'coco':
             arr_class[arr_class == 255] = 182
 
-        out_dict['label'] = arr_class[None, ]
+        out_dict['label'] = arr_class[None,]
 
         if arr_instance is not None:
-            out_dict['instance'] = arr_instance[None, ]
+            out_dict['instance'] = arr_instance[None,]
 
         return np.transpose(arr_image, [2, 0, 1]), out_dict
+
+
+class MockupDataset(Dataset):
+    """
+    Mockup dataset for debugging, just generates random images and labels.
+    """
+
+    def __init__(self, resolution, num_classes, num_images=100):
+        super().__init__()
+        self.resolution = resolution
+        self.num_classes = num_classes
+        self.num_images = num_images
+
+    def __len__(self):
+        return self.num_images
+
+    def __getitem__(self, idx):
+        image = np.random.uniform(-1, 1, [3, self.resolution, self.resolution]).astype(np.float32)
+        label = np.random.randint(0, self.num_classes, [self.resolution, self.resolution]).astype(np.int64)
+        return image, {'label': label[None,]}
 
 
 def resize_arr(pil_list, image_size, keep_aspect=True):
@@ -239,9 +273,9 @@ def center_crop_arr(pil_list, image_size):
     arr_instance = np.array(pil_instance) if pil_instance is not None else None
     crop_y = (arr_image.shape[0] - image_size) // 2
     crop_x = (arr_image.shape[1] - image_size) // 2
-    return arr_image[crop_y : crop_y + image_size, crop_x : crop_x + image_size],\
-           arr_class[crop_y: crop_y + image_size, crop_x: crop_x + image_size],\
-           arr_instance[crop_y : crop_y + image_size, crop_x : crop_x + image_size] if arr_instance is not None else None
+    return arr_image[crop_y: crop_y + image_size, crop_x: crop_x + image_size], \
+           arr_class[crop_y: crop_y + image_size, crop_x: crop_x + image_size], \
+           arr_instance[crop_y: crop_y + image_size, crop_x: crop_x + image_size] if arr_instance is not None else None
 
 
 def random_crop_arr(pil_list, image_size, min_crop_frac=0.8, max_crop_frac=1.0):
@@ -273,6 +307,6 @@ def random_crop_arr(pil_list, image_size, min_crop_frac=0.8, max_crop_frac=1.0):
     arr_instance = np.array(pil_instance) if pil_instance is not None else None
     crop_y = random.randrange(arr_image.shape[0] - image_size + 1)
     crop_x = random.randrange(arr_image.shape[1] - image_size + 1)
-    return arr_image[crop_y : crop_y + image_size, crop_x : crop_x + image_size],\
-           arr_class[crop_y: crop_y + image_size, crop_x: crop_x + image_size],\
-           arr_instance[crop_y : crop_y + image_size, crop_x : crop_x + image_size] if arr_instance is not None else None
+    return arr_image[crop_y: crop_y + image_size, crop_x: crop_x + image_size], \
+           arr_class[crop_y: crop_y + image_size, crop_x: crop_x + image_size], \
+           arr_instance[crop_y: crop_y + image_size, crop_x: crop_x + image_size] if arr_instance is not None else None

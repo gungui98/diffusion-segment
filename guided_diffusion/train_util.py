@@ -65,7 +65,7 @@ class TrainLoop:
 
         self.step = 0
         self.resume_step = 0
-        self.global_batch = self.batch_size * dist.get_world_size()
+        self.global_batch = self.batch_size # * dist.get_world_size()
 
         self.sync_cuda = th.cuda.is_available()
 
@@ -92,24 +92,24 @@ class TrainLoop:
                 for _ in range(len(self.ema_rate))
             ]
 
-        if th.cuda.is_available():
-            self.use_ddp = True
-            self.ddp_model = DDP(
-                self.model,
-                device_ids=[dist_util.dev()],
-                output_device=dist_util.dev(),
-                broadcast_buffers=False,
-                bucket_cap_mb=128,
-                find_unused_parameters=False,
-            )
-        else:
-            if dist.get_world_size() > 1:
-                logger.warn(
-                    "Distributed training requires CUDA. "
-                    "Gradients will not be synchronized properly!"
-                )
-            self.use_ddp = False
-            self.ddp_model = self.model
+        # if th.cuda.is_available() and dist.get_rank() == 0:
+        #     self.use_ddp = True
+        #     self.ddp_model = DDP(
+        #         self.model,
+        #         device_ids=[dist_util.dev()],
+        #         output_device=dist_util.dev(),
+        #         broadcast_buffers=False,
+        #         bucket_cap_mb=128,
+        #         find_unused_parameters=False,
+        #     )
+        # else:
+        #     if dist.get_world_size() > 1:
+        #         logger.warn(
+        #             "Distributed training requires CUDA. "
+        #             "Gradients will not be synchronized properly!"
+        #         )
+        self.use_ddp = False
+        self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
@@ -124,7 +124,7 @@ class TrainLoop:
                     )
                 )
 
-        dist_util.sync_params(self.model.parameters())
+        # dist_util.sync_params(self.model.parameters())
 
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.mp_trainer.master_params)

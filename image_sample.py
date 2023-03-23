@@ -24,7 +24,7 @@ from guided_diffusion.script_util import (
 def main():
     args = create_argparser().parse_args()
 
-    dist_util.setup_dist()
+    # dist_util.setup_dist()
     logger.configure()
 
     logger.log("creating model and diffusion...")

@@ -4,13 +4,15 @@ numpy array. This can be used to produce samples for FID evaluation.
 """
 
 import argparse
+import glob
 import os
 
+import imageio
 import torch as th
 import torch.distributed as dist
 import torchvision as tv
-
-from guided_diffusion.image_datasets import load_data
+import matplotlib
+import numpy as np
 
 from guided_diffusion import dist_util, logger
 from guided_diffusion.script_util import (
@@ -20,11 +22,23 @@ from guided_diffusion.script_util import (
     args_to_dict,
 )
 
+import os 
+
+os.environ["OPENAI_LOGDIR"] = "test"
+
+def load_data(data_dir, batch_size, image_size):
+    label_path = glob.glob(os.path.join(data_dir, '*.png'))
+    labels = [imageio.imread(path) for path in label_path]
+    # resize labels to image size
+    labels = [th.from_numpy(label).unsqueeze(0).float() for label in labels]
+    labels = th.stack(labels)
+    labels = th.nn.functional.interpolate(labels, size=image_size, mode='nearest')
+    return th.utils.data.DataLoader(labels, batch_size=batch_size)
+
 
 def main():
     args = create_argparser().parse_args()
 
-    # dist_util.setup_dist()
     logger.configure()
 
     logger.log("creating model and diffusion...")
@@ -32,71 +46,58 @@ def main():
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
     model.load_state_dict(
-        dist_util.load_state_dict(args.model_path, map_location="cpu")
+        th.load(args.model_path, map_location="cpu")
     )
     model.to(dist_util.dev())
 
     logger.log("creating data loader...")
     data = load_data(
-        dataset_mode=args.dataset_mode,
         data_dir=args.data_dir,
         batch_size=args.batch_size,
         image_size=args.image_size,
-        class_cond=args.class_cond,
-        deterministic=True,
-        random_crop=False,
-        random_flip=False,
-        is_train=False
     )
-
     if args.use_fp16:
         model.convert_to_fp16()
     model.eval()
 
-    image_path = os.path.join(args.results_path, 'images')
-    os.makedirs(image_path, exist_ok=True)
-    label_path = os.path.join(args.results_path, 'labels')
-    os.makedirs(label_path, exist_ok=True)
-    sample_path = os.path.join(args.results_path, 'samples')
-    os.makedirs(sample_path, exist_ok=True)
-
     logger.log("sampling...")
     all_samples = []
-    for i, (batch, cond) in enumerate(data):
-        image = ((batch + 1.0) / 2.0).cuda()
-        label = (cond['label_ori'].float() / 255.0).cuda()
-        model_kwargs = preprocess_input(cond, num_classes=args.num_classes)
-
-        # set hyperparameter
-        model_kwargs['s'] = args.s
-
+    labels = []
+    shape = (args.batch_size, 3, 256, 256)
+    noise = th.randn(*(shape[1:])).repeat(shape[0],1,1,1).to(dist_util.dev())
+    for i, label in enumerate(data):
+        if label.shape[0] != args.batch_size:
+            continue
+        model_kwargs = preprocess_input({"label" : label}, num_classes=args.num_classes)
+        # model_kwargs = th.load("cond.pth")
         sample_fn = (
-            diffusion.p_sample_loop if not args.use_ddim else diffusion.ddim_sample_loop
+            diffusion.p_sample_loop 
         )
+        shape = (args.batch_size, 3, label.shape[2], label.shape[3])
         sample = sample_fn(
             model,
-            (args.batch_size, 3, image.shape[2], image.shape[3]),
-            clip_denoised=args.clip_denoised,
+            shape,
+            clip_denoised=True,
             model_kwargs=model_kwargs,
-            progress=True
+            progress=True,
+            noise=noise,
         )
-        sample = (sample + 1) / 2.0
+        # sample = (sample + 1) / 2.0
+        all_samples.append(sample)
+        labels.append(label)
+    # save to mp4
+    all_samples = th.cat(all_samples, dim=0)
+    all_samples = all_samples.cpu().numpy()
+    all_samples = all_samples.transpose(0, 2, 3, 1)
 
-        gathered_samples = [th.zeros_like(sample) for _ in range(dist.get_world_size())]
-        dist.all_gather(gathered_samples, sample)  # gather not supported with NCCL
-        all_samples.extend([sample.cpu().numpy() for sample in gathered_samples])
-
-        for j in range(sample.shape[0]):
-            tv.utils.save_image(image[j], os.path.join(image_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(sample[j], os.path.join(sample_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-            tv.utils.save_image(label[j], os.path.join(label_path, cond['path'][j].split('/')[-1].split('.')[0] + '.png'))
-
-        logger.log(f"created {len(all_samples) * args.batch_size} samples")
-
-        if len(all_samples) * args.batch_size > args.num_samples:
-            break
-
-    dist.barrier()
+    all_labels = th.cat(labels, dim=0)
+    all_labels = all_labels.cpu().numpy().squeeze()
+    all_labels = matplotlib.cm.get_cmap('viridis')(all_labels/args.num_classes)[..., :3]
+    # replace nan with zero
+    
+    all_samples = np.concatenate([all_labels, all_samples], axis=2)
+    all_samples[np.isnan(all_samples)] = 0
+    imageio.mimsave(os.path.join(args.results_path, 'sample.gif'), all_samples, fps=30)
     logger.log("sampling complete")
 
 

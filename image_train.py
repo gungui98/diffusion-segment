@@ -7,6 +7,7 @@ import argparse
 
 from guided_diffusion import logger
 from guided_diffusion.image_datasets import load_mockup_data
+from guided_diffusion.echo_dataset import load_echo_data
 # from guided_diffusion.image_datasets import load_data
 from guided_diffusion.resample import create_named_schedule_sampler
 from guided_diffusion.script_util import (
@@ -40,7 +41,13 @@ def main():
     #     class_cond=args.class_cond,
     #     is_train=args.is_train
     # )
-    data = load_mockup_data(
+    # data = load_mockup_data(
+    #         batch_size=args.batch_size,
+    #         resolution=args.image_size,
+    #         class_cond=args.class_cond,
+    #         is_train=args.is_train
+    # )
+    data = load_echo_data(
             batch_size=args.batch_size,
             resolution=args.image_size,
             class_cond=args.class_cond,

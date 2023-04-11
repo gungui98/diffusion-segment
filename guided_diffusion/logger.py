@@ -447,8 +447,8 @@ def configure(dir=None, format_strs=None, comm=None, log_suffix=""):
         dir = os.getenv("OPENAI_LOGDIR")
     if dir is None:
         dir = osp.join(
-            tempfile.gettempdir(),
-            datetime.datetime.now().strftime("openai-%Y-%m-%d-%H-%M-%S-%f"),
+            "outputs",
+            datetime.datetime.now().strftime("%Y-%m-%d-%H-%M-%S-%f"),
         )
     assert isinstance(dir, str)
     dir = os.path.expanduser(dir)

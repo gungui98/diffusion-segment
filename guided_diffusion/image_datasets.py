@@ -217,6 +217,7 @@ class MockupDataset(Dataset):
         image = np.random.uniform(-1, 1, [3, self.resolution, self.resolution]).astype(np.float32)
         label = np.random.randint(0, self.num_classes, [self.resolution, self.resolution]).astype(np.int64)
         return image, {'label': label[None,]}
+    
 
 
 def resize_arr(pil_list, image_size, keep_aspect=True):
@@ -299,7 +300,7 @@ def random_crop_arr(pil_list, image_size, min_crop_frac=0.8, max_crop_frac=1.0):
     )
 
     pil_class = pil_class.resize(pil_image.size, resample=Image.NEAREST)
-    if pil_instance is not None:
+    if pil_instance is not  None:
         pil_instance = pil_instance.resize(pil_image.size, resample=Image.NEAREST)
 
     arr_image = np.array(pil_image)

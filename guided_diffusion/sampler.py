@@ -66,19 +66,19 @@ class DPMSolverSampler(object):
         else:
             img = x_T
 
-        ns = NoiseScheduleVP('discrete', alphas_cumprod=self.alphas_cumprod)
+        ns = NoiseScheduleVP('linear', alphas_cumprod=self.alphas_cumprod)
 
         model_fn = model_wrapper(
             lambda x, t, c: self.model.p_sample(noise_prediction_model, x, t, model_kwargs=c, return_dict=False),
             ns,
-            model_type="noise",
+            model_type="x_start",
             guidance_type="classifier-free",
             condition=conditioning,
             unconditional_condition=unconditional_conditioning,
             guidance_scale=unconditional_guidance_scale,
         )
 
-        dpm_solver = DPM_Solver(model_fn, ns, predict_x0=True, thresholding=False)
+        dpm_solver = DPM_Solver(model_fn, ns, predict_x0=False, thresholding=False)
         x = dpm_solver.sample(img, steps=S, skip_type="time_uniform", method="multistep", order=2, lower_order_final=True)
 
         return x.to(self.device)

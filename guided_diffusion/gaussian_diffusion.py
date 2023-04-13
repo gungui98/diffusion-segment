@@ -430,10 +430,12 @@ class GaussianDiffusion:
                  - 'sample': a random sample from the model.
                  - 'pred_xstart': a prediction of x_0.
         """
+        if (t <= 1).all():
+            t = (t*1000).long() - 1
         out = self.p_mean_variance(
             model,
             x,
-            t.long(),
+            t,
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,

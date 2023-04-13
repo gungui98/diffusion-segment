@@ -6,6 +6,7 @@ numpy array. This can be used to produce samples for FID evaluation.
 import argparse
 import glob
 import os
+import time
 
 import imageio
 import torch as th
@@ -83,10 +84,12 @@ def main():
             diffusion.p_sample_loop
         )
         shape = (args.batch_size, 3, label.shape[2], label.shape[3])
-
-        # sample = sampler.sample(S=20, shape=shape, noise_prediction_model=model, conditioning=model_kwargs)
-
-        sample = sample_fn(
+        # tik = time.time()
+        sample_1 = sampler.sample(S=20, shape=shape, noise_prediction_model=model, conditioning=model_kwargs)
+        imageio.imwrite(os.path.join(args.results_path, f"sample_{i}_ode.png"), sample_1[0].cpu().numpy().transpose(1, 2, 0))
+        # print(f"sample time: {time.time() - tik}")
+        # tik = time.time()
+        sample_2 = sample_fn(
             model,
             shape,
             clip_denoised=True,
@@ -94,7 +97,12 @@ def main():
             progress=True,
             noise=noise,
         )
-        sample = (sample + 1) / 2.0
+        # print(f"sample time: {time.time() - tik}")
+        np.save(os.path.join(args.results_path, f"sample_{i}_ode.npy"), sample_1[0].cpu().numpy().transpose(1, 2, 0))
+        np.save(os.path.join(args.results_path, f"sample_{i}_van.npy"), sample_2[0].cpu().numpy().transpose(1, 2, 0))
+        imageio.imwrite(os.path.join(args.results_path, f"sample_{i}_van.png"), sample_2[0].cpu().numpy().transpose(1, 2, 0))
+        exit(0)
+        sample = (sample_2 + 1) / 2.0
 
         all_samples.append(sample)
         labels.append(label)
@@ -164,4 +172,4 @@ def create_argparser():
 if __name__ == "__main__":
     main()
 
-# --data_dir ./data/ --dataset_mode echo --attention_resolutions 32,16,8 --diffusion_steps 1000 --image_size 256 --learn_sigma True --noise_schedule linear --num_channels 256 --num_head_channels 64  --num_res_blocks 2 --resblock_updown True --use_fp16 True --use_scale_shift_norm True --num_classes 151 --class_cond True --no_instance True --batch_size 2 --num_samples 2000 --s 1.5 --model_path OUTPUT/ADE20K-SDM-256CH-FINETUNE/ema_0.9999_best.pt --results_path RESULTS/ADE20K-SDM-256CH
+# python image_sample.py --data_dir ./data/ --dataset_mode echo --attention_resolutions 32,16,8 --diffusion_steps 1000 --image_size 256 --learn_sigma True --noise_schedule linear --num_channels 256 --num_head_channels 64  --num_res_blocks 2 --resblock_updown True --use_fp16 True --use_scale_shift_norm True --num_classes 4 --class_cond True --no_instance True --batch_size 2 --num_samples 2000 --s 1.5 --model_path outputs/2023-03-27-07-30-31-328003/ema_0.9999_039000.pt --results_path outputs

@@ -21,10 +21,12 @@ from guided_diffusion.script_util import (
     add_dict_to_argparser,
     args_to_dict,
 )
+from guided_diffusion.sampler import DPMSolverSampler
 
-import os 
+import os
 
 os.environ["OPENAI_LOGDIR"] = "test"
+
 
 def load_data(data_dir, batch_size, image_size):
     label_path = glob.glob(os.path.join(data_dir, '*.png'))
@@ -45,9 +47,12 @@ def main():
     model, diffusion = create_model_and_diffusion(
         **args_to_dict(args, model_and_diffusion_defaults().keys())
     )
-    model.load_state_dict(
-        th.load(args.model_path, map_location="cpu")
-    )
+    if os.path.exists(args.model_path):
+        model.load_state_dict(
+            th.load(args.model_path, map_location="cpu")
+        )
+    else:
+        print(f"model path, {args.model_path} not found, using random init")
     model.to(dist_util.dev())
 
     logger.log("creating data loader...")
@@ -56,6 +61,9 @@ def main():
         batch_size=args.batch_size,
         image_size=args.image_size,
     )
+
+    sampler = DPMSolverSampler(diffusion, device=dist_util.dev())
+
     if args.use_fp16:
         model.convert_to_fp16()
     model.eval()
@@ -64,16 +72,20 @@ def main():
     all_samples = []
     labels = []
     shape = (args.batch_size, 3, 256, 256)
-    noise = th.randn(*(shape[1:])).repeat(shape[0],1,1,1).to(dist_util.dev())
+    noise = th.randn(*(shape[1:])).repeat(shape[0], 1, 1, 1).to(dist_util.dev())
     for i, label in enumerate(data):
         if label.shape[0] != args.batch_size:
             continue
-        model_kwargs = preprocess_input({"label" : label}, num_classes=args.num_classes)
+        model_kwargs = preprocess_input({"label": label}, num_classes=args.num_classes)
+        model_kwargs = {k: v.to(dist_util.dev()) for k, v in model_kwargs.items()}
         # model_kwargs = th.load("cond.pth")
         sample_fn = (
-            diffusion.p_sample_loop 
+            diffusion.p_sample_loop
         )
         shape = (args.batch_size, 3, label.shape[2], label.shape[3])
+
+        # sample = sampler.sample(S=20, shape=shape, noise_prediction_model=model, conditioning=model_kwargs)
+
         sample = sample_fn(
             model,
             shape,
@@ -82,7 +94,8 @@ def main():
             progress=True,
             noise=noise,
         )
-        # sample = (sample + 1) / 2.0
+        sample = (sample + 1) / 2.0
+
         all_samples.append(sample)
         labels.append(label)
     # save to mp4
@@ -92,9 +105,9 @@ def main():
 
     all_labels = th.cat(labels, dim=0)
     all_labels = all_labels.cpu().numpy().squeeze()
-    all_labels = matplotlib.cm.get_cmap('viridis')(all_labels/args.num_classes)[..., :3]
+    all_labels = matplotlib.cm.get_cmap('viridis')(all_labels / args.num_classes)[..., :3]
     # replace nan with zero
-    
+
     all_samples = np.concatenate([all_labels, all_samples], axis=2)
     all_samples[np.isnan(all_samples)] = 0
     imageio.mimsave(os.path.join(args.results_path, 'sample.gif'), all_samples, fps=30)
@@ -150,3 +163,5 @@ def create_argparser():
 
 if __name__ == "__main__":
     main()
+
+# --data_dir ./data/ --dataset_mode echo --attention_resolutions 32,16,8 --diffusion_steps 1000 --image_size 256 --learn_sigma True --noise_schedule linear --num_channels 256 --num_head_channels 64  --num_res_blocks 2 --resblock_updown True --use_fp16 True --use_scale_shift_norm True --num_classes 151 --class_cond True --no_instance True --batch_size 2 --num_samples 2000 --s 1.5 --model_path OUTPUT/ADE20K-SDM-256CH-FINETUNE/ema_0.9999_best.pt --results_path RESULTS/ADE20K-SDM-256CH

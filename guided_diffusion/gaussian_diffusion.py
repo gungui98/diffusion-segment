@@ -411,6 +411,7 @@ class GaussianDiffusion:
         denoised_fn=None,
         cond_fn=None,
         model_kwargs=None,
+        return_dict=True,
     ):
         """
         Sample x_{t-1} from the model at the given timestep.
@@ -432,7 +433,7 @@ class GaussianDiffusion:
         out = self.p_mean_variance(
             model,
             x,
-            t,
+            t.long(),
             clip_denoised=clip_denoised,
             denoised_fn=denoised_fn,
             model_kwargs=model_kwargs,
@@ -446,7 +447,10 @@ class GaussianDiffusion:
                 cond_fn, out, x, t, model_kwargs=model_kwargs
             )
         sample = out["mean"] + nonzero_mask * th.exp(0.5 * out["log_variance"]) * noise
-        return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+        if return_dict:
+            return {"sample": sample, "pred_xstart": out["pred_xstart"]}
+        else:
+            return sample
 
     def p_sample_loop(
         self,

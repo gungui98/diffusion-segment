@@ -1,0 +1,87 @@
+data:
+    dataset: "ECHO"
+    image_size: 256
+    channels: 3
+    logit_transform: false
+    uniform_dequantization: false
+    gaussian_dequantization: false
+    random_flip: true
+    rescaled: true
+    num_workers: 32
+    num_classes: 1000
+
+model:
+    model_type: "guided_diffusion"
+#    is_upsampling: false
+#    image_size: 256
+#    in_channels: 3
+#    model_channels: 256
+#    out_channels: 6
+#    num_res_blocks: 2
+#    attention_resolutions: [8 16 32] # [256 // 32 256 // 16 256 // 8]
+#    dropout: 0.0
+#    channel_mult: [1 1 2 2 4 4]
+#    conv_resample: true
+#    dims: 2
+#    num_classes: 1000
+#    use_checkpoint: false
+#    use_fp16: true
+#    num_heads: 4
+#    num_head_channels: 64
+#    num_heads_upsample: -1
+#    use_scale_shift_norm: true
+#    resblock_updown: true
+#    use_new_attention_order: false
+#    var_type: fixedlarge
+#    ema: false
+#    ckpt_dir: "~/ddpm_ckpt/imagenet256/256x256_diffusion.pt"
+#    unet:
+    image_size: 64
+    num_classes: 151
+    num_channels: 128
+    num_res_blocks: 2
+    num_heads: 4
+    num_heads_upsample: -1
+    num_head_channels: -1
+    attention_resolutions: "16,8"
+    channel_mult: ""
+    dropout: 0.0
+    class_cond: False
+    use_checkpoint: False
+    use_scale_shift_norm: True
+    resblock_updown: False
+    use_fp16: False
+    use_new_attention_order: False
+    no_instance: False
+
+diffusion:
+    beta_schedule: linear
+    beta_start: 0.0001
+    beta_end: 0.02
+    num_diffusion_timesteps: 1000
+
+training:
+    batch_size: 128
+    n_epochs: 10000
+    n_iters: 5000000
+    snapshot_freq: 5000
+    validation_freq: 20000
+
+sampling:
+    total_N: 1000
+    batch_size: 500
+    last_only: True
+    fid_stats_dir: "fid_stats/fid_stats_celeba64_train_50000_ddim.npz"
+    fid_total_samples: 50000
+    fid_batch_size: 1000
+    cond_class: false
+    classifier_scale: 0.0
+
+optim:
+    weight_decay: 0.000
+    optimizer: "Adam"
+    lr: 0.0002
+    beta1: 0.9
+    amsgrad: false
+    eps: 0.00000001
+    grad_clip: 1.0

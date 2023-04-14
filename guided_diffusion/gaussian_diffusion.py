@@ -430,8 +430,6 @@ class GaussianDiffusion:
                  - 'sample': a random sample from the model.
                  - 'pred_xstart': a prediction of x_0.
         """
-        if (t <= 1).all():
-            t = (t*1000).long() - 1
         out = self.p_mean_variance(
             model,
             x,
@@ -908,6 +906,8 @@ class GaussianDiffusion:
             "xstart_mse": xstart_mse,
             "mse": mse,
         }
+
+
 
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):

@@ -69,10 +69,10 @@ class DPMSolverSampler(object):
         ns = NoiseScheduleVP('linear', alphas_cumprod=self.alphas_cumprod)
 
         model_fn = model_wrapper(
-            lambda x, t, c: self.model.p_sample(noise_prediction_model, x, t, model_kwargs=c, return_dict=False),
+            lambda x, t: torch.split(noise_prediction_model(x, t, **conditioning), 3, dim=1)[0],
             ns,
-            model_type="x_start",
-            guidance_type="classifier-free",
+            model_type="noise",
+            guidance_type="uncond",
             condition=conditioning,
             unconditional_condition=unconditional_conditioning,
             guidance_scale=unconditional_guidance_scale,

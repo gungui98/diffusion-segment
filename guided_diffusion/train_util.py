@@ -2,16 +2,11 @@ import copy
 import functools
 import os
 
-import imageio
 import blobfile as bf
 import torch as th
 import torch.distributed as dist
 from torch.nn.parallel.distributed import DistributedDataParallel as DDP
 from torch.optim import AdamW
-import torchvision as tv
-import numpy as np
-import matplotlib
-import wandb
 
 from . import dist_util, logger
 from .fp16_util import MixedPrecisionTrainer
@@ -31,12 +26,10 @@ class TrainLoop:
         model,
         diffusion,
         data,
-        num_classes,
         batch_size,
         microbatch,
         lr,
         ema_rate,
-        drop_rate,
         log_interval,
         save_interval,
         resume_checkpoint,
@@ -46,12 +39,9 @@ class TrainLoop:
         weight_decay=0.0,
         lr_anneal_steps=0,
     ):
-        wandb.init(project="guided-diffusion")
-
         self.model = model
         self.diffusion = diffusion
         self.data = data
-        self.num_classes = num_classes
         self.batch_size = batch_size
         self.microbatch = microbatch if microbatch > 0 else batch_size
         self.lr = lr
@@ -60,7 +50,6 @@ class TrainLoop:
             if isinstance(ema_rate, float)
             else [float(x) for x in ema_rate.split(",")]
         )
-        self.drop_rate = drop_rate
         self.log_interval = log_interval
         self.save_interval = save_interval
         self.resume_checkpoint = resume_checkpoint
@@ -72,8 +61,7 @@ class TrainLoop:
 
         self.step = 0
         self.resume_step = 0
-        self.log_images_interval = 100  
-        self.global_batch = self.batch_size # * dist.get_world_size()
+        self.global_batch = self.batch_size * dist.get_world_size()
 
         self.sync_cuda = th.cuda.is_available()
 
@@ -100,38 +88,39 @@ class TrainLoop:
                 for _ in range(len(self.ema_rate))
             ]
 
-        # if th.cuda.is_available() and dist.get_rank() == 0:
-        #     self.use_ddp = True
-        #     self.ddp_model = DDP(
-        #         self.model,
-        #         device_ids=[dist_util.dev()],
-        #         output_device=dist_util.dev(),
-        #         broadcast_buffers=False,
-        #         bucket_cap_mb=128,
-        #         find_unused_parameters=False,
-        #     )
-        # else:
-        #     if dist.get_world_size() > 1:
-        #         logger.warn(
-        #             "Distributed training requires CUDA. "
-        #             "Gradients will not be synchronized properly!"
-        #         )
-        self.use_ddp = False
-        self.ddp_model = self.model
+        if th.cuda.is_available():
+            self.use_ddp = True
+            self.ddp_model = DDP(
+                self.model,
+                device_ids=[dist_util.dev()],
+                output_device=dist_util.dev(),
+                broadcast_buffers=False,
+                bucket_cap_mb=128,
+                find_unused_parameters=False,
+            )
+        else:
+            if dist.get_world_size() > 1:
+                logger.warn(
+                    "Distributed training requires CUDA. "
+                    "Gradients will not be synchronized properly!"
+                )
+            self.use_ddp = False
+            self.ddp_model = self.model
 
     def _load_and_sync_parameters(self):
         resume_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
 
         if resume_checkpoint:
             self.resume_step = parse_resume_step_from_filename(resume_checkpoint)
-            logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
-            self.model.load_state_dict(
-                th.load(
-                    resume_checkpoint, map_location=dist_util.dev()
+            if dist.get_rank() == 0:
+                logger.log(f"loading model from checkpoint: {resume_checkpoint}...")
+                self.model.load_state_dict(
+                    dist_util.load_state_dict(
+                        resume_checkpoint, map_location=dist_util.dev()
+                    )
                 )
-            )
 
-        # dist_util.sync_params(self.model.parameters())
+        dist_util.sync_params(self.model.parameters())
 
     def _load_ema_parameters(self, rate):
         ema_params = copy.deepcopy(self.mp_trainer.master_params)
@@ -139,11 +128,12 @@ class TrainLoop:
         main_checkpoint = find_resume_checkpoint() or self.resume_checkpoint
         ema_checkpoint = find_ema_checkpoint(main_checkpoint, self.resume_step, rate)
         if ema_checkpoint:
-            logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
-            state_dict = th.load(
-                ema_checkpoint, map_location=dist_util.dev()
-            )
-            ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
+            if dist.get_rank() == 0:
+                logger.log(f"loading EMA from checkpoint: {ema_checkpoint}...")
+                state_dict = dist_util.load_state_dict(
+                    ema_checkpoint, map_location=dist_util.dev()
+                )
+                ema_params = self.mp_trainer.state_dict_to_master_params(state_dict)
 
         dist_util.sync_params(ema_params)
         return ema_params
@@ -155,13 +145,10 @@ class TrainLoop:
         )
         if bf.exists(opt_checkpoint):
             logger.log(f"loading optimizer state from checkpoint: {opt_checkpoint}")
-            state_dict = th.load(
+            state_dict = dist_util.load_state_dict(
                 opt_checkpoint, map_location=dist_util.dev()
             )
             self.opt.load_state_dict(state_dict)
-
-            if self.opt.param_groups[0]['lr'] != self.lr:
-                self.opt.param_groups[0]['lr'] = self.lr
 
     def run_loop(self):
         while (
@@ -169,9 +156,7 @@ class TrainLoop:
             or self.step + self.resume_step < self.lr_anneal_steps
         ):
             batch, cond = next(self.data)
-            cond = self.preprocess_input(cond)
             self.run_step(batch, cond)
-            self._log_images(batch, cond)
             if self.step % self.log_interval == 0:
                 logger.dumpkvs()
             if self.step % self.save_interval == 0:
@@ -216,56 +201,17 @@ class TrainLoop:
             else:
                 with self.ddp_model.no_sync():
                     losses = compute_losses()
-            
+
             if isinstance(self.schedule_sampler, LossAwareSampler):
                 self.schedule_sampler.update_with_local_losses(
                     t, losses["loss"].detach()
                 )
 
             loss = (losses["loss"] * weights).mean()
-            wandb.log({k:v.mean().item() for k,v in losses.items()}, step=self.step)
             log_loss_dict(
                 self.diffusion, t, {k: v * weights for k, v in losses.items()}
             )
             self.mp_trainer.backward(loss)
-
-    def _log_images(self, batch, cond):
-        """Log images to tensorboard."""
-        
-        if self.step % self.log_images_interval != 0:
-            return
-
-        if self.step == 0:
-            return
-
-        t, weights = self.schedule_sampler.sample(batch.shape[0], dist_util.dev())
-
-        # set hyperparameter
-
-        image = batch
-        label = cond['y']
-
-        sample_fn = (
-            self.diffusion.p_sample_loop # if not args.use_ddim else self.diffusion.ddim_sample_loop
-        )
-        sample = sample_fn(
-            self.ddp_model,
-            (self.batch_size, 3, batch.shape[2], batch.shape[3]),
-            clip_denoised=True,
-            model_kwargs=cond,
-            progress=True
-        )
-        sample = (sample + 1) / 2.0
-        for j in range(sample.shape[0]):
-            vis_image = image[j].cpu().numpy().transpose(1, 2, 0)
-            sample_image = sample[j].cpu().numpy().transpose(1, 2, 0)
-            label_image = label[j].cpu().numpy()
-            label_image = matplotlib.cm.get_cmap('viridis')(np.argmax(label_image, axis=0)/self.num_classes)
-            label_image = label_image[:, :, :3]
-            vis_image = np.concatenate([vis_image, sample_image, label_image], axis=1)
-            imageio.imsave( os.path.join(get_blob_logdir(), f'vis_{self.step:06}_{j:03}.png'), vis_image)
-            wandb.log({"vis": [wandb.Image(vis_image)]}, step=self.step)
-        print('save image to {}'.format(get_blob_logdir()))
 
     def _update_ema(self):
         for rate, params in zip(self.ema_rate, self.ema_params):
@@ -286,58 +232,27 @@ class TrainLoop:
     def save(self):
         def save_checkpoint(rate, params):
             state_dict = self.mp_trainer.master_params_to_state_dict(params)
-            logger.log(f"saving model {rate}...")
-            if not rate:
-                filename = f"model{(self.step+self.resume_step):06d}.pt"
-            else:
-                filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
-            with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
-                th.save(state_dict, f)
+            if dist.get_rank() == 0:
+                logger.log(f"saving model {rate}...")
+                if not rate:
+                    filename = f"model{(self.step+self.resume_step):06d}.pt"
+                else:
+                    filename = f"ema_{rate}_{(self.step+self.resume_step):06d}.pt"
+                with bf.BlobFile(bf.join(get_blob_logdir(), filename), "wb") as f:
+                    th.save(state_dict, f)
 
         save_checkpoint(0, self.mp_trainer.master_params)
         for rate, params in zip(self.ema_rate, self.ema_params):
             save_checkpoint(rate, params)
 
-        with bf.BlobFile(
-            bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
-            "wb",
-        ) as f:
-            th.save(self.opt.state_dict(), f)
+        if dist.get_rank() == 0:
+            with bf.BlobFile(
+                bf.join(get_blob_logdir(), f"opt{(self.step+self.resume_step):06d}.pt"),
+                "wb",
+            ) as f:
+                th.save(self.opt.state_dict(), f)
 
-
-    def preprocess_input(self, data):
-        # move to GPU and change data types
-        data['label'] = data['label'].long()
-
-        # create one-hot label map
-        label_map = data['label']
-        bs, _, h, w = label_map.size()
-        nc = self.num_classes
-        input_label = th.FloatTensor(bs, nc, h, w).zero_()
-        input_semantics = input_label.scatter_(1, label_map, 1.0)
-
-        # concatenate instance map if it exists
-        if 'instance' in data:
-            inst_map = data['instance']
-            instance_edge_map = self.get_edges(inst_map)
-            input_semantics = th.cat((input_semantics, instance_edge_map), dim=1)
-
-        if self.drop_rate > 0.0:
-            mask = (th.rand([input_semantics.shape[0], 1, 1, 1]) > self.drop_rate).float()
-            input_semantics = input_semantics * mask
-
-        cond = {key: value for key, value in data.items() if key not in ['label', 'instance', 'path', 'label_ori']}
-        cond['y'] = input_semantics
-
-        return cond
-
-    def get_edges(self, t):
-        edge = th.ByteTensor(t.size()).zero_()
-        edge[:, :, :, 1:] = edge[:, :, :, 1:] | (t[:, :, :, 1:] != t[:, :, :, :-1])
-        edge[:, :, :, :-1] = edge[:, :, :, :-1] | (t[:, :, :, 1:] != t[:, :, :, :-1])
-        edge[:, :, 1:, :] = edge[:, :, 1:, :] | (t[:, :, 1:, :] != t[:, :, :-1, :])
-        edge[:, :, :-1, :] = edge[:, :, :-1, :] | (t[:, :, 1:, :] != t[:, :, :-1, :])
-        return edge.float()
+        dist.barrier()
 
 
 def parse_resume_step_from_filename(filename):

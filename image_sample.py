@@ -15,6 +15,7 @@ import matplotlib
 import numpy as np
 
 from guided_diffusion import dist_util, logger
+from guided_diffusion.dpm_solver import NoiseScheduleVP, model_wrapper, DPM_Solver
 from guided_diffusion.script_util import (
     model_and_diffusion_defaults,
     create_model_and_diffusion,
@@ -36,6 +37,46 @@ def load_data(data_dir, batch_size, image_size):
     labels = th.stack(labels)
     labels = th.nn.functional.interpolate(labels, size=image_size, mode='nearest')
     return th.utils.data.DataLoader(labels, batch_size=batch_size)
+
+
+def sample_image(x, diffusion, model, last=True, classifier=None, model_kwargs=None):
+    skip = 1
+
+    def model_fn(x, t, **model_kwargs):
+        out = model(x, t, **model_kwargs)
+        # If the model outputs both 'mean' and 'variance' (such as improved-DDPM and guided-diffusion),
+        # We only use the 'mean' output for DPM-Solver, because DPM-Solver is based on diffusion ODEs.
+        if hasattr(model, "out_channels"):
+            if model.out_channels == 6:
+                out = th.split(out, 3, dim=1)[0]
+        return out
+
+    def classifier_fn(x, t, y, **classifier_kwargs):
+        logits = classifier(x, t)
+        log_probs = th.nn.functional.log_softmax(logits, dim=-1)
+        return log_probs[range(len(logits)), y.view(-1)]
+
+    noise_schedule = NoiseScheduleVP(schedule='discrete', betas=th.from_numpy(diffusion.betas))
+    model_fn_continuous = model_wrapper(
+        model_fn,
+        noise_schedule,
+        model_type="noise",
+        model_kwargs=model_kwargs,
+        guidance_type="uncond" if classifier is None else "classifier",
+        condition=model_kwargs["y"] if "y" in model_kwargs.keys() else None,
+        guidance_scale=None,
+        classifier_fn=classifier_fn,
+        classifier_kwargs={},
+    )
+    dpm_solver = DPM_Solver(
+        model_fn_continuous,
+        noise_schedule,
+    )
+    x = dpm_solver.sample(
+        x,
+        steps=20,
+    )
+    return x
 
 
 def main():
@@ -62,8 +103,6 @@ def main():
         image_size=args.image_size,
     )
 
-    sampler = DPMSolverSampler(diffusion, device=dist_util.dev())
-
     if args.use_fp16:
         model.convert_to_fp16()
     model.eval()
@@ -86,32 +125,8 @@ def main():
 
         # sample = sampler.sample(S=20, shape=shape, noise_prediction_model=model, conditioning=model_kwargs)
 
-        sample = sample_fn(
-            model,
-            shape,
-            clip_denoised=True,
-            model_kwargs=model_kwargs,
-            progress=True,
-            noise=noise,
-        )
-        sample = (sample + 1) / 2.0
-
-        all_samples.append(sample)
-        labels.append(label)
-    # save to mp4
-    all_samples = th.cat(all_samples, dim=0)
-    all_samples = all_samples.cpu().numpy()
-    all_samples = all_samples.transpose(0, 2, 3, 1)
-
-    all_labels = th.cat(labels, dim=0)
-    all_labels = all_labels.cpu().numpy().squeeze()
-    all_labels = matplotlib.cm.get_cmap('viridis')(all_labels / args.num_classes)[..., :3]
-    # replace nan with zero
-
-    all_samples = np.concatenate([all_labels, all_samples], axis=2)
-    all_samples[np.isnan(all_samples)] = 0
-    imageio.mimsave(os.path.join(args.results_path, 'sample.gif'), all_samples, fps=30)
-    logger.log("sampling complete")
+        x = sample_image(noise, diffusion, model, last=True, classifier=None, model_kwargs=model_kwargs)
+        imageio.imwrite(f"test_{i}.png", x[0].cpu().numpy().transpose(1, 2, 0))
 
 
 def preprocess_input(data, num_classes):
